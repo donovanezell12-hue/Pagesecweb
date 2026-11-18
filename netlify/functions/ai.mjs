@@ -23,6 +23,11 @@ function cors(req) {
   };
 }
 
+const err = (req, status, message, extra = {}) => {
+  console.error("[ai]", status, message, JSON.stringify(extra));
+  return json(req, status, { error: { message, ...extra } });
+};
+
 const json = (req, status, body) =>
   new Response(JSON.stringify(body), {
     status,
@@ -40,13 +45,13 @@ export default async (req) => {
   if (req.method === "GET") {
     return json(req, 200, { ok: true, provider: "gemini", model: MODEL, key_set: !!process.env.GEMINI_API_KEY });
   }
-  if (req.method !== "POST") return json(req, 405, { error: "POST only" });
+  if (req.method !== "POST") return err(req, 405, "POST only");
 
   const key = process.env.GEMINI_API_KEY;
-  if (!key) return json(req, 500, { error: "GEMINI_API_KEY not set in Netlify environment variables" });
+  if (!key) return err(req, 500, "GEMINI_API_KEY not set in Netlify environment variables");
 
   let body;
-  try { body = await req.json(); } catch { return json(req, 400, { error: "Invalid JSON" }); }
+  try { body = await req.json(); } catch { return err(req, 400, "Invalid JSON"); }
 
   // Accept a bare {prompt} too, just in case
   const msgs = Array.isArray(body.messages) && body.messages.length
@@ -85,12 +90,14 @@ export default async (req) => {
         continue;
       }
       if (!r.ok) {
-        return json(req, r.status, { error: data?.error?.message || "Gemini error", model: m, detail: data?.error });
+        return err(req, r.status, `Gemini (${m}): ` + (data?.error?.message || "error"), { model: m });
       }
       const cand = data.candidates?.[0];
       const text = (cand?.content?.parts || []).filter(p => !p.thought).map(p => p.text || "").join("");
-      if (!text) {
-        return json(req, 502, { error: "Empty response from Gemini", model: m, finishReason: cand?.finishReason, feedback: data.promptFeedback });
+      if (!text) {                       // blank answer: try the next model
+        lastErr = { message: `Empty response from ${m} (finishReason: ${cand?.finishReason || "none"}${data.promptFeedback?.blockReason ? ", blocked: " + data.promptFeedback.blockReason : ""})`, model: m };
+        console.error("[ai] empty", JSON.stringify({ m, finishReason: cand?.finishReason, feedback: data.promptFeedback }));
+        continue;
       }
       MODEL = m;
       return json(req, 200, {
@@ -100,9 +107,9 @@ export default async (req) => {
         stop_reason: cand?.finishReason === "MAX_TOKENS" ? "max_tokens" : "end_turn",
       });
     }
-    return json(req, 502, { error: "No Gemini model available: " + (lastErr?.message || "unknown"), tried: MODELS });
+    return err(req, 502, "No Gemini model worked. Last problem: " + (lastErr?.message || "unknown"), { tried: MODELS });
   } catch (e) {
-    return json(req, 502, { error: "Proxy failure: " + e.message });
+    return err(req, 502, "Proxy failure: " + e.message);
   }
 };
 
