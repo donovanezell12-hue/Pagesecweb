@@ -423,7 +423,7 @@ window.PS_CONFIG = {
   MY_EMAIL:      'hdaiofficial@gmail.com',
 
   // ── AI Config ─────────────────────────────────────────────────
-  AI_ENDPOINT:   'https://donovans-secritary-mode.onrender.com/ai',
+  AI_ENDPOINT:   '/ai',   // Netlify Function -> Gemini (same origin)
   AI_MODEL:      'claude-sonnet-4-6',
   AI_MAX_TOKENS: 1000,
 
@@ -437,7 +437,7 @@ window.PS_CONFIG = {
   EMAILJS_PUBLIC_KEY:  'KshW4oBc-AOIE5E47',
 
   // ── App settings ──────────────────────────────────────────────
-  APP_VERSION:   '2.1.1',
+  APP_VERSION:   '2.1.1-gemini',
   STORAGE_KEY:   'ps_v2_data',
 
   // ── Payment methods ───────────────────────────────────────────
@@ -891,9 +891,9 @@ async function ai(prompt, sys = SYS_PROMPT) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
       const msg = err?.error?.message || `Server error ${res.status}`;
-      if (res.status === 401) throw new Error('Invalid API key — check ANTHROPIC_API_KEY on your Render proxy.');
+      if (res.status === 401 || res.status === 403) throw new Error('AI key problem — check GEMINI_API_KEY in Netlify environment variables.');
       if (res.status === 429) throw new Error('Rate limited — wait 30 seconds and try again.');
-      if (msg.includes('ANTHROPIC_API_KEY')) throw new Error('API key not set on proxy server. Add it in Render → Environment Variables.');
+      if (msg.includes('GEMINI_API_KEY')) throw new Error('AI key not set. Add GEMINI_API_KEY in Netlify → Environment variables, then redeploy.');
       throw new Error(msg);
     }
 
@@ -903,7 +903,7 @@ async function ai(prompt, sys = SYS_PROMPT) {
   } catch (e) {
     // CORS / network error = proxy not reachable
     if (e instanceof TypeError) {
-      return '⚠️ Cannot reach AI proxy. Make sure your Render.com proxy is deployed and the URL in config matches. See Settings tab for setup steps.';
+      return '⚠️ Cannot reach the AI function. Check your connection and that the latest deploy includes the /ai function.';
     }
     console.warn('AI error:', e.message);
     return `⚠️ AI error: ${e.message}`;
@@ -1588,8 +1588,6 @@ async function blastAll() {
   if (!S.blastTopic.trim()) { toast('Enter a topic first!','i'); return; }
   S.blasting = true; S.blastRes = {}; render();
   // Wake proxy first
-  try { await fetch(C.AI_ENDPOINT.replace('/ai','/')); } catch(e) {}
-  await new Promise(r => setTimeout(r, 1000));
   // Generate all 6 in parallel for speed
   const results = await Promise.all(
     PLATS.map(async p => {
@@ -3160,11 +3158,6 @@ async function wakeAndGenPlan() {
   // Ping the proxy first to wake it, wait a moment, then generate
   S.advisorLoading = true; S.advisorPlan = ''; render();
   toast('Waking up AI proxy…','i');
-  try {
-    await fetch(C.AI_ENDPOINT.replace('/ai','/'));
-  } catch(e) {}
-  // Wait 3 seconds for it to fully wake
-  await new Promise(r => setTimeout(r, 3000));
   await genAdvisorPlan();
 }
 
@@ -3674,15 +3667,8 @@ setInterval(() => {
 // PROXY KEEP-ALIVE — pings Render every 10 min so it
 // never spins down and causes "failed to fetch"
 // ══════════════════════════════════════════════════════
-function pingProxy() {
-  if (C.AI_ENDPOINT) {
-    fetch(C.AI_ENDPOINT.replace('/ai', '/'))
-      .then(() => console.log('[Proxy] Alive'))
-      .catch(() => console.log('[Proxy] Sleeping — will wake on next request'));
-  }
-}
-pingProxy();                          // wake it immediately on app load
-setInterval(pingProxy, 10 * 60 * 1000); // keep alive every 10 minutes
+function pingProxy() {}
+// (keep-alive removed: Netlify Functions don't sleep)
 (function seedJobs() {
   APP_DATA.jobs     = APP_DATA.jobs     || [];
   APP_DATA.customers = APP_DATA.customers || [];
