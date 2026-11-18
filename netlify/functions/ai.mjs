@@ -4,7 +4,11 @@
 // Returns Anthropic-style JSON so the front end keeps working:
 //   { content:[{type:"text", text}], text, model, stop_reason }
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+// Model tried first, then automatic fallbacks if Google says a model is gone (404).
+const PRIMARY = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const FALLBACKS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite"];
+const MODELS = [PRIMARY, ...FALLBACKS.filter(m => m !== PRIMARY)];
+let MODEL = PRIMARY; // last model that worked
 const ALLOWED = (process.env.ALLOWED_ORIGIN || "https://page-secretary.netlify.app")
   .split(",").map(s => s.trim());
 
@@ -57,7 +61,7 @@ export default async (req) => {
   const payload = {
     contents,
     generationConfig: {
-      maxOutputTokens: Math.min(Number(body.max_tokens) || 1024, 8192),
+      maxOutputTokens: Math.min(Math.max(Number(body.max_tokens) || 1024, 4096), 8192),
       temperature: body.temperature ?? 0.7,
     },
   };
@@ -65,29 +69,38 @@ export default async (req) => {
   if (sys) payload.systemInstruction = { parts: [{ text: sys }] };
 
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify(payload),
+    let lastErr = null;
+    for (const m of MODELS) {
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify(payload),
+        }
+      );
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 404) {            // model retired/renamed: try the next one
+        lastErr = { status: 404, message: data?.error?.message || "Model not found", model: m };
+        continue;
       }
-    );
-    const data = await r.json();
-    if (!r.ok) {
-      return json(req, r.status, { error: data?.error?.message || "Gemini error", detail: data?.error });
+      if (!r.ok) {
+        return json(req, r.status, { error: data?.error?.message || "Gemini error", model: m, detail: data?.error });
+      }
+      const cand = data.candidates?.[0];
+      const text = (cand?.content?.parts || []).filter(p => !p.thought).map(p => p.text || "").join("");
+      if (!text) {
+        return json(req, 502, { error: "Empty response from Gemini", model: m, finishReason: cand?.finishReason, feedback: data.promptFeedback });
+      }
+      MODEL = m;
+      return json(req, 200, {
+        content: [{ type: "text", text }],
+        text,
+        model: m,
+        stop_reason: cand?.finishReason === "MAX_TOKENS" ? "max_tokens" : "end_turn",
+      });
     }
-    const cand = data.candidates?.[0];
-    const text = (cand?.content?.parts || []).map(p => p.text || "").join("");
-    if (!text) {
-      return json(req, 502, { error: "Empty response from Gemini", finishReason: cand?.finishReason, feedback: data.promptFeedback });
-    }
-    return json(req, 200, {
-      content: [{ type: "text", text }],
-      text,
-      model: MODEL,
-      stop_reason: cand?.finishReason === "MAX_TOKENS" ? "max_tokens" : "end_turn",
-    });
+    return json(req, 502, { error: "No Gemini model available: " + (lastErr?.message || "unknown"), tried: MODELS });
   } catch (e) {
     return json(req, 502, { error: "Proxy failure: " + e.message });
   }
