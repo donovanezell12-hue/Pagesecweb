@@ -437,7 +437,7 @@ window.PS_CONFIG = {
   EMAILJS_PUBLIC_KEY:  'KshW4oBc-AOIE5E47',
 
   // ── App settings ──────────────────────────────────────────────
-  APP_VERSION:   '2.1.1-gemini',
+  APP_VERSION:   '2.1.3-gemini-saved',
   STORAGE_KEY:   'ps_v2_data',
 
   // ── Payment methods ───────────────────────────────────────────
@@ -746,6 +746,7 @@ const DB = {
       google:     {views:'—', leads:'—', calls:'—', trend:[30,35,40,38,50,55,60]},
       twitter:    {views:'—', leads:'—', calls:'—', trend:[5,8,6,12,10,15,14]},
     },
+      savedPosts: {},
       jobs: [],
       customers: [],
       reels: [],
@@ -868,7 +869,35 @@ const S = {
 // ══════════════════════════════════════════════════════
 // AI — proxy-based, works on Netlify
 // ══════════════════════════════════════════════════════
-async function ai(prompt, sys = SYS_PROMPT) {
+// One AI call at a time, spaced out, with retry on rate-limit/overload.
+// (Firing many calls at once blows through the free Gemini limits.)
+const AI_GAP_MS = 4000;    // pause between calls
+const AI_RETRY_MS = 12000; // wait before retrying a rate-limited call
+const AI_RETRIES = 2;
+let _aiChain = Promise.resolve();
+const _aiBusy = /rate limited|too many|overloaded|high demand|unavailable|quota|\b429\b|\b503\b|No Gemini model worked/i;
+const _aiPending = {};
+function _aiKey(t){let h=5381;for(let i=0;i<t.length;i++)h=((h<<5)+h+t.charCodeAt(i))|0;return 'k'+(h>>>0).toString(36)+t.length;}
+function _cGet(k){try{const e=JSON.parse(localStorage.getItem('ps_aicache_v1')||'{}')[k];return e&&Date.now()-e.t<14*864e5?e.v:null;}catch{return null;}}
+function _cPut(k,v){try{const c=JSON.parse(localStorage.getItem('ps_aicache_v1')||'{}');c[k]={t:Date.now(),v};const ks=Object.keys(c);if(ks.length>40)ks.sort((x,y)=>c[x].t-c[y].t).slice(0,ks.length-40).forEach(x=>delete c[x]);localStorage.setItem('ps_aicache_v1',JSON.stringify(c));}catch{}}
+// opts: {cache:true} reuses a saved answer for the identical request (no AI call); {maxTokens:n}
+function ai(prompt, sys = SYS_PROMPT, opts = {}) {
+  const ck = opts.cache ? _aiKey(sys + '|' + prompt) : null;
+  if (ck) { const hit = _cGet(ck); if (hit) return Promise.resolve(hit); if (_aiPending[ck]) return _aiPending[ck]; }
+  const run = _aiChain.then(async () => {
+    let out = await aiOnce(prompt, sys, opts);
+    for (let i = 0; i < AI_RETRIES && out.startsWith('⚠️ AI error') && _aiBusy.test(out); i++) {
+      await new Promise(r => setTimeout(r, AI_RETRY_MS));
+      out = await aiOnce(prompt, sys, opts);
+    }
+    return out;
+  });
+  _aiChain = run.catch(() => {}).then(() => new Promise(r => setTimeout(r, AI_GAP_MS)));
+  if (ck) { _aiPending[ck] = run; run.then(v => { if (!v.startsWith('⚠️') && !v.startsWith('Empty')) _cPut(ck, v); }).finally(() => delete _aiPending[ck]); }
+  return run;
+}
+
+async function aiOnce(prompt, sys = SYS_PROMPT, opts = {}) {
   if (!S.isOnline) {
     return '⚠️ You are offline. Connect to the internet and try again.';
   }
@@ -882,7 +911,7 @@ async function ai(prompt, sys = SYS_PROMPT) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model:      C.AI_MODEL,
-        max_tokens: C.AI_MAX_TOKENS,
+        max_tokens: opts.maxTokens || C.AI_MAX_TOKENS,
         system:     sys,
         messages:   [{ role: 'user', content: prompt }],
       }),
@@ -1382,7 +1411,7 @@ function rWrite() {
       <div class="fl" style="flex:1;margin-bottom:0;"><label>Type</label><select onchange="S.draftType=this.value">${['Promotional','Engagement','Behind the Scenes','Testimonial','Announcement','Tip'].map(o=>`<option ${S.draftType===o?'selected':''}>${o}</option>`).join('')}</select></div>
       <div class="fl" style="flex:1;margin-bottom:0;"><label>Emojis</label><select onchange="S.draftEmoji=this.value">${['Minimal','Moderate','Heavy'].map(o=>`<option ${S.draftEmoji===o?'selected':''}>${o}</option>`).join('')}</select></div>
     </div>
-    <div class="brow"><button class="btn b-bl" onclick="genDraft()" ${S.draftLoading?'disabled':''}>✨ Generate Post</button></div>
+    <div class="brow"><button class="btn b-bl" onclick="genDraft()" ${S.draftLoading?'disabled':''}>✨ Generate Post</button> <button class="btn b-gh bsm" onclick="openSaved('facebook','write')">📌 Use a saved post (${svList('facebook').length})</button></div>
     ${S.draftLoading ? spin() : ''}
     ${S.draft ? `
     <textarea rows="7" oninput="S.draft=this.value" style="margin-top:10px;">${xe(S.draft)}</textarea>
@@ -1390,6 +1419,7 @@ function rWrite() {
     <div class="brow">
       <button class="btn b-gh bsm" onclick="improveDraft()" ${S.draftLoading?'disabled':''}>🔄 Improve</button>
       <button class="btn b-gh bsm" onclick="cp(S.draft)">📋 Copy</button>
+      <button class="btn b-gh bsm" onclick="savePost('facebook',S.draft)">⭐ Save</button>
       <a href="https://facebook.com" target="_blank" class="olink bsm" style="color:var(--blue);border-color:var(--blue)44;background:var(--blue)11;">🔗 FB →</a>
     </div>
     <div style="margin-top:10px;display:flex;gap:8px;">
@@ -1468,18 +1498,18 @@ function rPlatPage(p) {
   <div class="card">
     <div class="ct">✨ Generate ${p.name} Post</div>
     <div class="fl"><label>Topic</label><input type="text" id="pt_${p.id}" placeholder="e.g. available this week, TV mounting, free estimates…"/></div>
-    <button class="btn b-bl" onclick="genPlatPost('${p.id}')" ${S[lk]?'disabled':''}>✨ Generate</button>
+    <button class="btn b-bl" onclick="genPlatPost('${p.id}')" ${S[lk]?'disabled':''}>✨ Generate</button> <button class="btn b-gh bsm" onclick="openSaved('${p.id}','plat')">📌 Use a saved ${p.name} post (${svList(p.id).length})</button>
     ${S[lk] ? spin() : ''}
     ${S[ak] ? `<textarea rows="8" style="margin-top:11px;width:100%;background:var(--p2);border:1px solid var(--b1);border-radius:9px;color:var(--tx);font-family:inherit;font-size:13px;padding:12px;outline:none;resize:vertical;line-height:1.6;" oninput="S['${ak}']=this.value">${xe(S[ak])}</textarea>
     <div class="pnote">✅ Uses "starting at" pricing — no final prices</div>
-    <div class="brow"><button class="btn b-or bsm" onclick="cp(S['${ak}'])">📋 Copy</button><a href="${p.post}" target="_blank" class="olink bsm" style="color:${p.color};border-color:${p.color}44;background:${p.color}11;">🔗 Post →</a><button class="btn b-gh bsm" onclick="genPlatPost('${p.id}')">🔄 Redo</button></div>` : ''}
+    <div class="brow"><button class="btn b-or bsm" onclick="cp(S['${ak}'])">📋 Copy</button><button class="btn b-gh bsm" onclick="savePost('${p.id}',S['${ak}'])">⭐ Save</button><a href="${p.post}" target="_blank" class="olink bsm" style="color:${p.color};border-color:${p.color}44;background:${p.color}11;">🔗 Post →</a><button class="btn b-gh bsm" onclick="genPlatPost('${p.id}')">🔄 Redo</button></div>` : ''}
   </div>`;
 }
 
 async function genPlatPost(id) {
   const p=PLATS.find(x=>x.id===id); const lk='pal_'+id; const ak='pai_'+id;
   const topic=document.getElementById('pt_'+id)?.value||'available for Jacksonville jobs this week';
-  S[lk]=true;S[ak]='';render();S[ak]=await ai(p.fn(topic));S[lk]=false;render();
+  const fresh=!!S[ak];S[lk]=true;S[ak]='';render();S[ak]=await ai(p.fn(topic),undefined,{cache:!fresh});S[lk]=false;render();
 }
 
 function rBlast() {
@@ -1504,6 +1534,7 @@ function rBlast() {
       </button>
       ${allDone ? `<button class="btn b-gh bsm" onclick="copyAllPosts()" title="Copy all posts">📋 All</button>` : ''}
     </div>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;"><button class="btn b-gh bsm" onclick="fillFromSaved()">📌 Use my saved posts (free)</button><button class="btn b-gh bsm" onclick="openSaved('facebook','blast')">⭐ Saved</button>${done>0&&done<6&&!S.blasting?`<button class="btn b-bl bsm" onclick="blastAll(true)">✨ Write the other ${6-done} with AI</button>`:''}</div>
     ${S.blasting ? `${spin()}<div style="font-size:11px;color:var(--mu);margin-top:4px;">Generating each post — may take 30–60 seconds if proxy is waking up…</div>` : ''}
   </div>
 
@@ -1542,6 +1573,7 @@ function rBlast() {
         <button class="btn b-or bsm" onclick="cp(S.blastRes['${p.id}'])">📋 Copy Caption</button>
         <button class="btn b-bl bsm" onclick="openPlatform('${p.id}')">🔗 Open ${p.name}</button>
         <button class="btn b-gh bsm" onclick="regenP('${p.id}')">🔄 Redo</button>
+        <button class="btn b-gh bsm" onclick="savePost('${p.id}',S.blastRes['${p.id}'])">⭐ Save</button>
       </div>`}
     </div>`;
   }).join('')}` : ''}`;
@@ -1584,23 +1616,75 @@ function toggleP(id) {
   render();
 }
 
-async function blastAll() {
+async function blastAll(missingOnly) {
   if (!S.blastTopic.trim()) { toast('Enter a topic first!','i'); return; }
-  S.blasting = true; S.blastRes = {}; render();
-  // Wake proxy first
-  // Generate all 6 in parallel for speed
-  const results = await Promise.all(
-    PLATS.map(async p => {
-      S.blastRes[p.id] = 'Writing…'; render();
-      const text = await ai(p.fn(S.blastTopic));
-      S.blastRes[p.id] = text;
-      render();
-      return { id: p.id, text };
-    })
-  );
-  S.blasting = false;
-  toast(`🚀 All 6 posts ready!`, 's');
+  const fresh = !missingOnly && Object.keys(S.blastRes).length > 0;   // "Regenerate" skips the saved answer
+  const plats = missingOnly ? PLATS.filter(p => !S.blastRes[p.id]) : PLATS;
+  if (!plats.length) return;
+  S.blasting = true; if (!missingOnly) S.blastRes = {};
+  plats.forEach(p => S.blastRes[p.id] = 'Writing…'); render();
+  // ONE request for all platforms (was 6 at once)
+  const prompt = 'Write ' + plats.length + ' separate posts, one per platform, same business and topic. Follow each platform\'s instructions exactly. Output format: for each platform put its label on its own line (e.g. ###FACEBOOK###) then only that post text, no commentary.\n\n' +
+    plats.map(p => '###' + p.id.toUpperCase() + '### instructions: ' + p.fn(S.blastTopic)).join('\n\n');
+  const out = await ai(prompt, undefined, { maxTokens: 3500, cache: !fresh });
+  const got = {};
+  if (!out.startsWith('⚠️')) {
+    const parts = out.split(/^[ \t]*###([A-Z]+)###[ \t]*$/m);
+    for (let i = 1; i < parts.length; i += 2) { const t = (parts[i+1] || '').trim(); if (t) got[parts[i].toLowerCase()] = t; }
+  }
+  plats.forEach(p => { if (got[p.id]) S.blastRes[p.id] = got[p.id]; });
   render();
+  for (const p of plats) if (!got[p.id]) { S.blastRes[p.id] = 'Writing…'; render(); S.blastRes[p.id] = await ai(p.fn(S.blastTopic)); render(); }
+  S.blasting = false; toast('🚀 Posts ready!', 's'); render();
+}
+
+// ══════════════════════════════════════════════════════
+// SAVED POSTS — keep up to 5 favorites per platform; reuse before spending AI
+// ══════════════════════════════════════════════════════
+const SAVE_MAX = 5;
+function svList(pl) { APP_DATA.savedPosts = APP_DATA.savedPosts || {}; return APP_DATA.savedPosts[pl] = APP_DATA.savedPosts[pl] || []; }
+function savePost(pl, text) {
+  text = (text || '').trim();
+  if (!text || text === 'Writing…' || text.startsWith('⚠️')) { toast('Nothing to save yet.', 'i'); return; }
+  const l = svList(pl);
+  if (l.some(x => x.text === text)) { toast('Already saved ⭐', 'i'); return; }
+  if (l.length >= SAVE_MAX) { S.sv = { plat: pl, mode: 'replace', pending: text }; svDraw(); return; }
+  l.unshift({ id: uid(), text, at: new Date().toLocaleDateString() });
+  saveData(); toast('Saved ⭐ (' + l.length + '/' + SAVE_MAX + ')', 's'); render();
+}
+function openSaved(pl, target) { S.sv = { plat: pl, target, mode: 'use' }; svDraw(); }
+function closeSaved() { S.sv = null; const m = document.getElementById('svm'); if (m) m.remove(); }
+function svTab(pl) { S.sv.plat = pl; svDraw(); }
+function svUse(id) {
+  const sv = S.sv, it = svList(sv.plat).find(x => x.id === id); if (!it) return;
+  if (sv.target === 'blast') S.blastRes[sv.plat] = it.text;
+  else if (sv.target === 'plat') S['pai_' + sv.plat] = it.text;
+  else S.draft = it.text;
+  closeSaved(); render(); toast('Loaded your saved post — no AI used', 's');
+}
+function svCopy(id) { const it = svList(S.sv.plat).find(x => x.id === id); if (it) cp(it.text); }
+function svDel(id) { const l = svList(S.sv.plat), i = l.findIndex(x => x.id === id); if (i > -1) { l.splice(i, 1); saveData(); } svDraw(); render(); }
+function svReplace(id) {
+  const sv = S.sv, l = svList(sv.plat), i = l.findIndex(x => x.id === id);
+  if (i > -1) { l[i] = { id: uid(), text: sv.pending, at: new Date().toLocaleDateString() }; saveData(); toast('Saved ⭐ (replaced)', 's'); }
+  closeSaved(); render();
+}
+function fillFromSaved() {
+  let n = 0;
+  PLATS.forEach(p => { const l = svList(p.id); if (l.length) { S.blastRes[p.id] = l[Math.floor(Math.random() * l.length)].text; n++; } });
+  if (!n) { toast('No saved posts yet — tap ⭐ Save on posts you like.', 'i'); return; }
+  render(); toast(n + ' of 6 filled from your saved posts — no AI used', 's');
+}
+function svDraw() {
+  const sv = S.sv; if (!sv) return;
+  let m = document.getElementById('svm');
+  if (!m) { m = document.createElement('div'); m.id = 'svm'; m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:flex-end;justify-content:center;'; document.body.appendChild(m); }
+  const l = svList(sv.plat), rep = sv.mode === 'replace', pl = PLATS.find(p => p.id === sv.plat);
+  m.innerHTML = `<div style="background:var(--p1);border:1px solid var(--b2);border-radius:18px 18px 0 0;width:100%;max-width:640px;max-height:82vh;overflow:auto;padding:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="font-size:16px;font-weight:900;">${rep ? '⭐ ' + pl.name + ' is full (5/5)' : '📌 Saved posts'}</div><button class="btn b-gh bsm" onclick="closeSaved()">✕</button></div>
+    ${rep ? '<div style="font-size:12px;color:var(--sub);margin-bottom:8px;">Pick one to replace with the new post.</div>' : `<div style="display:flex;gap:6px;overflow:auto;margin-bottom:10px;">${PLATS.map(p => `<div onclick="svTab('${p.id}')" style="flex:none;padding:6px 10px;border-radius:9px;font-size:12px;font-weight:800;border:1px solid ${p.id === sv.plat ? p.color : 'var(--b1)'};color:${p.id === sv.plat ? p.color : 'var(--sub)'};">${p.icon} ${svList(p.id).length}/5</div>`).join('')}</div>`}
+    ${l.length ? l.map(x => `<div style="background:var(--p2);border:1px solid var(--b1);border-radius:11px;padding:11px;margin-bottom:8px;"><div style="font-size:13px;line-height:1.5;white-space:pre-wrap;max-height:150px;overflow:auto;">${xe(x.text)}</div><div style="font-size:10px;color:var(--mu);margin:6px 0;">Saved ${xe(x.at)}</div><div class="brow" style="margin-top:0;">${rep ? `<button class="btn b-or bsm" onclick="svReplace('${x.id}')">Replace this one</button>` : `<button class="btn b-bl bsm" onclick="svUse('${x.id}')">Use this</button><button class="btn b-gh bsm" onclick="svCopy('${x.id}')">📋 Copy</button><button class="btn b-gh bsm" onclick="if(confirm('Delete this saved post?'))svDel('${x.id}')">🗑</button>`}</div></div>`).join('') : '<div style="color:var(--mu);font-size:13px;padding:14px 0;">Nothing saved for ' + pl.name + ' yet. Tap ⭐ Save on a post you like.</div>'}
+  </div>`;
 }
 
 async function regenP(pid) {
@@ -1620,7 +1704,7 @@ function rDraft() {
       <div class="fl"><label>Type</label><select onchange="S.draftType=this.value">${['Promotional','Engagement','Behind the Scenes','Testimonial','Announcement','Tip'].map(o=>`<option ${S.draftType===o?'selected':''}>${o}</option>`).join('')}</select></div>
       <div class="fl"><label>Emojis</label><select onchange="S.draftEmoji=this.value">${['Minimal','Moderate','Heavy'].map(o=>`<option ${S.draftEmoji===o?'selected':''}>${o}</option>`).join('')}</select></div>
     </div>
-    <button class="btn b-bl" onclick="genDraft()" ${S.draftLoading?'disabled':''}>✨ Generate Post</button>
+    <button class="btn b-bl" onclick="genDraft()" ${S.draftLoading?'disabled':''}>✨ Generate Post</button> <button class="btn b-gh bsm" onclick="openSaved('facebook','write')">📌 Use a saved post (${svList('facebook').length})</button>
     ${S.draftLoading ? spin() : ''}
   </div>
   <div class="card">
@@ -1645,8 +1729,8 @@ function rDraft() {
 
 async function genDraft(){
   if(!S.draftBrief.trim()){toast('Enter a topic first.','i');return;}
-  S.draftLoading=true;S.draft='';render();
-  S.draft=await ai(`Write a Facebook post for Jacksonville FL handyman ${C.OWNER_NAME}. Brief:"${S.draftBrief}". Type:${S.draftType}. Emoji:${S.draftEmoji}. Phone:${C.PHONE}. Website:${C.WEBSITE}. NEVER final price — "starting at" or "free estimate". Under 200 words.`);
+  const fresh=!!S.draft;S.draftLoading=true;S.draft='';render();
+  S.draft=await ai(`Write a Facebook post for Jacksonville FL handyman ${C.OWNER_NAME}. Brief:"${S.draftBrief}". Type:${S.draftType}. Emoji:${S.draftEmoji}. Phone:${C.PHONE}. Website:${C.WEBSITE}. NEVER final price — "starting at" or "free estimate". Under 200 words.`,undefined,{cache:!fresh});
   S.draftLoading=false;render();
 }
 async function improveDraft(){
