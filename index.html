@@ -875,7 +875,7 @@ const AI_GAP_MS = 4000;    // pause between calls
 const AI_RETRY_MS = 12000; // wait before retrying a rate-limited call
 const AI_RETRIES = 2;
 let _aiChain = Promise.resolve();
-const _aiBusy = /rate limited|too many|overloaded|high demand|unavailable|quota|\b429\b|\b503\b|No Gemini model worked/i;
+const _aiBusy = /rate limited|too many|overloaded|high demand|unavailable|quota|\b429\b|\b503\b|No (Gemini|AI) model worked/i;
 const _aiPending = {};
 function _aiKey(t){let h=5381;for(let i=0;i<t.length;i++)h=((h<<5)+h+t.charCodeAt(i))|0;return 'k'+(h>>>0).toString(36)+t.length;}
 function _cGet(k){try{const e=JSON.parse(localStorage.getItem('ps_aicache_v1')||'{}')[k];return e&&Date.now()-e.t<14*864e5?e.v:null;}catch{return null;}}
@@ -920,9 +920,9 @@ async function aiOnce(prompt, sys = SYS_PROMPT, opts = {}) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
       const msg = err?.error?.message || `Server error ${res.status}`;
-      if (res.status === 401 || res.status === 403) throw new Error('AI key problem — check GEMINI_API_KEY in Netlify environment variables.');
+      if (res.status === 401 || res.status === 403) throw new Error('Google rejected the key: ' + msg.slice(0, 220));
       if (res.status === 429) throw new Error('Rate limited — wait 30 seconds and try again.');
-      if (msg.includes('GEMINI_API_KEY')) throw new Error('AI key not set. Add GEMINI_API_KEY in Netlify → Environment variables, then redeploy.');
+      if (msg.includes('No AI key set')) throw new Error('AI key not set. Add GROQ_API_KEY in Netlify → Environment variables, then redeploy.');
       throw new Error(msg);
     }
 
