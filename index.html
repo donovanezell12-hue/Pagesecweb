@@ -13,6 +13,7 @@
        The app previously had zero manifest/icon links, which is why it could not
        be installed to the home screen — it was PWA-styled but not PWA-installable. -->
   <link rel="manifest" href="manifest.json"/>
+  <script src="config.js"></script>
   <link rel="icon" href="icons/icon-192.png"/>
   <link rel="apple-touch-icon" href="icons/icon-192.png"/>
   <title>PageSecretary 🔧</title>
@@ -423,7 +424,7 @@ window.PS_CONFIG = {
   MY_EMAIL:      'hdaiofficial@gmail.com',
 
   // ── AI Config ─────────────────────────────────────────────────
-  AI_ENDPOINT:   '/ai',   // Netlify Function -> Gemini (same origin)
+  AI_ENDPOINT:   (window.PS_AI_ENDPOINT || '/ai'),   // set in config.js (Cloudflare Worker URL)
   AI_MODEL:      'claude-sonnet-4-6',
   AI_MAX_TOKENS: 1000,
 
@@ -437,7 +438,7 @@ window.PS_CONFIG = {
   EMAILJS_PUBLIC_KEY:  'KshW4oBc-AOIE5E47',
 
   // ── App settings ──────────────────────────────────────────────
-  APP_VERSION:   '2.1.3-gemini-saved',
+  APP_VERSION:   '2.1.4-ghpages',
   STORAGE_KEY:   'ps_v2_data',
 
   // ── Payment methods ───────────────────────────────────────────
