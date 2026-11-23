@@ -6,7 +6,7 @@
 // This version pre-caches the app shell on install so the app can genuinely
 // open and be used (existing data, existing UI) with no connection.
 
-const CACHE_NAME = 'pagesecretary-shell-v5-ghpages';
+const CACHE_NAME = 'pagesecretary-shell-v6-radar';
 const APP_SHELL = [
   './',
   './index.html',
