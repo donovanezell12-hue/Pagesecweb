@@ -6,11 +6,12 @@
 // This version pre-caches the app shell on install so the app can genuinely
 // open and be used (existing data, existing UI) with no connection.
 
-const CACHE_NAME = 'pagesecretary-shell-v4-gemini';
+const CACHE_NAME = 'pagesecretary-shell-v5-ghpages';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.json',
+  './config.js',
   './icon-192.png',
   './icon-512.png',
   './icon-512-maskable.png',
@@ -35,7 +36,7 @@ self.addEventListener('fetch', (event) => {
   const url = event.request.url;
 
   // Never cache or intercept AI/email API calls — always go to network.
-  if (url.includes('onrender.com') || url.includes('emailjs') || url.includes('api.anthropic.com') || new URL(url).pathname === '/ai') {
+  if (url.includes('workers.dev') || url.includes('onrender.com') || url.includes('emailjs') || url.includes('api.anthropic.com') || new URL(url).pathname === '/ai') {
     return;
   }
 
