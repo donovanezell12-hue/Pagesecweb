@@ -438,7 +438,7 @@ window.PS_CONFIG = {
   EMAILJS_PUBLIC_KEY:  'KshW4oBc-AOIE5E47',
 
   // ── App settings ──────────────────────────────────────────────
-  APP_VERSION:   '2.1.4-ghpages',
+  APP_VERSION:   '2.1.5-radar',
   STORAGE_KEY:   'ps_v2_data',
 
   // ── Payment methods ───────────────────────────────────────────
@@ -482,7 +482,9 @@ Services (starting prices — NEVER quote final prices):
 TV Mounting from $50, Furniture Assembly from $40, Drywall Patching from $50,
 Power Washing from $100, Gutter Cleaning from $80, Door Locks from $40,
 Shelves/Rods from $30, Light Fixtures from $50, Gate Installation & Repair from $75,
-Plumbing & Electrical free estimate, Other/Custom jobs free estimate.
+Minor Plumbing free estimate, Other/Custom jobs free estimate.
+Do NOT advertise electrical work in any post or ad.
+STYLE: plain text. Never use asterisks, markdown bold, double dashes or em dashes. Short sentences like a real person texting a neighbor.
 RULE: Always say "starting at" or "free estimate" — never a single final price.
 Sound like a trustworthy local neighbor, not a corporation.`;
 
@@ -898,6 +900,33 @@ function ai(prompt, sys = SYS_PROMPT, opts = {}) {
   return run;
 }
 
+
+// ---- AI output cleanup: no asterisks / double dashes / em dashes in posts ----
+function cleanAI(t){ return String(t).replace(/\*+/g,'').replace(/--+/g,'-').replace(/\s—\s/g,' - ').replace(/—/g,'-'); }
+
+// ---- Usage radar (Groq free tier: ~1,000 requests/day, ~200K tokens/day, 8K tokens/min) ----
+const RADAR = { REQ: 1000, TOK: 200000, WARN: 0.70, RED: 0.90 };
+function _radarGet(){ const d=new Date().toISOString().slice(0,10); try{ const u=JSON.parse(localStorage.getItem('ps_usage_v1')||'{}'); if(u.day===d) return u; }catch{} return {day:d,req:0,tok:0,lvl:0,rl:null}; }
+function _radarPut(u){ try{ localStorage.setItem('ps_usage_v1',JSON.stringify(u)); }catch{} }
+function radarNote(data){
+  const u=_radarGet(); u.req+=1; u.tok+=Number(data?.usage?.tokens)||0;
+  if(data?.usage?.remaining_requests!=null){ const rem=Number(data.usage.remaining_requests); if(!isNaN(rem)) u.req=Math.max(u.req, RADAR.REQ-rem); }
+  const pct=Math.max(u.req/RADAR.REQ, u.tok/RADAR.TOK);
+  const lvl=pct>=RADAR.RED?2:pct>=RADAR.WARN?1:0;
+  if(lvl>u.lvl){ u.lvl=lvl; toast(lvl===2?'AI almost out for today ('+Math.round(pct*100)+'% used). Use saved posts.':'Heads up: '+Math.round(pct*100)+'% of today\'s free AI used.', lvl===2?'e':'w'); }
+  _radarPut(u); radarPaint();
+}
+function radarHit429(){ const u=_radarGet(); u.lvl=2; _radarPut(u); radarPaint(); }
+function radarPaint(){
+  const u=_radarGet(), pct=Math.max(u.req/RADAR.REQ, u.tok/RADAR.TOK), p=Math.round(pct*100);
+  const col=pct>=RADAR.RED?'#ff5470':pct>=RADAR.WARN?'#f7b94f':'';
+  const t=document.querySelector('.ai-txt'), d=document.querySelector('.ai-dot');
+  if(t){ t.textContent='AI '+p+'%'; t.style.color=col; }
+  if(d){ d.style.background=col; }
+}
+function radarInfo(){ const u=_radarGet(); toast('Today: '+u.req+' of '+RADAR.REQ+' requests, '+Math.round(u.tok/1000)+'K of '+Math.round(RADAR.TOK/1000)+'K tokens. Resets daily.','i'); }
+document.addEventListener('DOMContentLoaded',()=>{ const pill=document.querySelector('.ai-pill'); if(pill){ pill.style.cursor='pointer'; pill.addEventListener('click',radarInfo);} radarPaint(); });
+
 async function aiOnce(prompt, sys = SYS_PROMPT, opts = {}) {
   if (!S.isOnline) {
     return '⚠️ You are offline. Connect to the internet and try again.';
@@ -922,13 +951,14 @@ async function aiOnce(prompt, sys = SYS_PROMPT, opts = {}) {
       const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
       const msg = err?.error?.message || `Server error ${res.status}`;
       if (res.status === 401 || res.status === 403) throw new Error('Google rejected the key: ' + msg.slice(0, 220));
-      if (res.status === 429) throw new Error('Rate limited — wait 30 seconds and try again.');
-      if (msg.includes('No AI key set')) throw new Error('AI key not set. Add GROQ_API_KEY in Netlify → Environment variables, then redeploy.');
+      if (res.status === 429) { radarHit429(); throw new Error('Rate limited — wait 30 seconds and try again.'); }
+      if (msg.includes('No AI key set')) throw new Error('AI key not set. Add GROQ_API_KEY as a secret in the Cloudflare Worker, then redeploy.');
       throw new Error(msg);
     }
 
     const data = await res.json();
-    return data.content?.map(b => b.text || '').join('') || 'Empty response — try again.';
+    radarNote(data);
+    return cleanAI(data.content?.map(b => b.text || '').join('')) || 'Empty response — try again.';
 
   } catch (e) {
     // CORS / network error = proxy not reachable
@@ -958,8 +988,8 @@ function toast(msg, type = 'i') {
   if (!w) return;
   const el = document.createElement('div');
   el.className = 'toast';
-  el.style.borderLeft = `3px solid ${type==='s' ? 'var(--grn)' : 'var(--blue)'}`;
-  el.textContent = (type==='s' ? '✅ ' : 'ℹ️ ') + msg;
+  el.style.borderLeft = `3px solid ${type==='s' ? 'var(--grn)' : type==='w' ? '#f7b94f' : type==='e' ? '#ff5470' : 'var(--blue)'}`;
+  el.textContent = (type==='s' ? '✅ ' : type==='w' ? '⚠️ ' : type==='e' ? '🚨 ' : 'ℹ️ ') + msg;
   w.appendChild(el);
   setTimeout(() => el.remove(), 3000);
 }
@@ -1374,7 +1404,7 @@ function savePlatStat(platId) {
 
 async function genGroupPost() {
   S.groupLoading = true; render();
-  S.groupPost = await ai(`Write a short natural Facebook group post for Jacksonville FL handyman ${C.OWNER_NAME} looking for local work. TV mounting from $50, furniture assembly from $40, drywall from $50, plumbing and electrical free estimate. Verified Angi/TaskRabbit/Wayfair. Sound like a genuine neighbor. CTA to DM or call ${C.PHONE}. Website ${C.WEBSITE}. Under 130 words.`);
+  S.groupPost = await ai(`Write a short natural Facebook group post for Jacksonville FL handyman ${C.OWNER_NAME} looking for local work. TV mounting from $50, furniture assembly from $40, drywall from $50, Minor plumbing free estimate. Verified Angi/TaskRabbit/Wayfair. Sound like a genuine neighbor. CTA to DM or call ${C.PHONE}. Website ${C.WEBSITE}. Under 130 words.`);
   S.groupLoading = false; render();
 }
 
@@ -1407,7 +1437,7 @@ function rWrite() {
   return `
   <div class="card">
     <div class="ct">✍️ AI Post Writer</div>
-    <div class="fl"><label>What to post about</label><textarea rows="3" oninput="S.draftBrief=this.value" placeholder="e.g. Available this week in Jacksonville — TV mounting, furniture, plumbing. Ask people to DM.">${xe(S.draftBrief)}</textarea></div>
+    <div class="fl"><label>What to post about</label><textarea rows="3" oninput="S.draftBrief=this.value" placeholder="e.g. Available this week in Jacksonville — TV mounting, furniture assembly, drywall. Ask people to DM.">${xe(S.draftBrief)}</textarea></div>
     <div style="display:flex;gap:8px;">
       <div class="fl" style="flex:1;margin-bottom:0;"><label>Type</label><select onchange="S.draftType=this.value">${['Promotional','Engagement','Behind the Scenes','Testimonial','Announcement','Tip'].map(o=>`<option ${S.draftType===o?'selected':''}>${o}</option>`).join('')}</select></div>
       <div class="fl" style="flex:1;margin-bottom:0;"><label>Emojis</label><select onchange="S.draftEmoji=this.value">${['Minimal','Moderate','Heavy'].map(o=>`<option ${S.draftEmoji===o?'selected':''}>${o}</option>`).join('')}</select></div>
@@ -1700,7 +1730,7 @@ function rDraft() {
   return `
   <div class="card">
     <div class="ct">✍️ AI Post Writer</div>
-    <div class="fl"><label>What to post about</label><textarea rows="3" oninput="S.draftBrief=this.value" placeholder="e.g. Available in Jacksonville this week — TV mounting, furniture, plumbing. Ask people to DM.">${xe(S.draftBrief)}</textarea></div>
+    <div class="fl"><label>What to post about</label><textarea rows="3" oninput="S.draftBrief=this.value" placeholder="e.g. Available in Jacksonville this week — TV mounting, furniture assembly, drywall. Ask people to DM.">${xe(S.draftBrief)}</textarea></div>
     <div class="fl2">
       <div class="fl"><label>Type</label><select onchange="S.draftType=this.value">${['Promotional','Engagement','Behind the Scenes','Testimonial','Announcement','Tip'].map(o=>`<option ${S.draftType===o?'selected':''}>${o}</option>`).join('')}</select></div>
       <div class="fl"><label>Emojis</label><select onchange="S.draftEmoji=this.value">${['Minimal','Moderate','Heavy'].map(o=>`<option ${S.draftEmoji===o?'selected':''}>${o}</option>`).join('')}</select></div>
@@ -2279,7 +2309,7 @@ async function genClAd(zid, zname) {
   const topSvcs = zone ? Object.entries(zone.sc).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k])=>SM[k]?.l||k).join(', ') : 'repairs';
   S[ak] = await ai(
     `Write a Craigslist Services ad for ${C.OWNER_NAME}, Jacksonville FL handyman targeting ${zname} homeowners. Top services needed: ${topSvcs}.
-Format exactly: [ALL CAPS TITLE mentioning ${zname}]\n[blank line]\n[1-2 sentence local opener]\n[blank line]\nSERVICES (starting prices only — NEVER final):\n- TV Mounting — starting at $50\n- Furniture Assembly — starting at $40/item\n- Drywall Patching — starting at $50\n- Power Washing — starting at $100\n- Gutter Cleaning — starting at $80\n- Gate Installation & Repair — starting at $75\n- Plumbing & Electrical — free estimate\n- All repairs & custom jobs — free estimate\n[blank line]\nABOUT ME:\nVerified Angi, TaskRabbit & Wayfair. 5-star rated. Free estimates. No deposit. Satisfaction guaranteed.\n[blank line]\nCONTACT & BOOK:\nCall/Text: ${C.PHONE}\nBook online: ${C.WEBSITE}\nPayment: ${C.PAYMENT_METHODS}`,
+Format exactly: [ALL CAPS TITLE mentioning ${zname}]\n[blank line]\n[1-2 sentence local opener]\n[blank line]\nSERVICES (starting prices only — NEVER final):\n- TV Mounting — starting at $50\n- Furniture Assembly — starting at $40/item\n- Drywall Patching — starting at $50\n- Power Washing — starting at $100\n- Gutter Cleaning — starting at $80\n- Gate Installation & Repair — starting at $75\n- Plumbing — free estimate\n- All repairs & custom jobs — free estimate\n[blank line]\nABOUT ME:\nVerified Angi, TaskRabbit & Wayfair. 5-star rated. Free estimates. No deposit. Satisfaction guaranteed.\n[blank line]\nCONTACT & BOOK:\nCall/Text: ${C.PHONE}\nBook online: ${C.WEBSITE}\nPayment: ${C.PAYMENT_METHODS}`,
     'Write only the ad text as instructed. No preamble.'
   );
   S[lk]=false;render();
@@ -3433,7 +3463,6 @@ Services & starting prices:
 🧹 Power Washing — starting at $100
 🌿 Gutter Cleaning — starting at $80
 💧 Plumbing — free estimate
-⚡ Electrical — free estimate
 And much more — free estimates on everything!
 
 Verified on Angi, TaskRabbit & Wayfair. 5-star rated.
@@ -3500,7 +3529,7 @@ function rContact() {
 
 TV Mounting (from $50) · Furniture Assembly (from $40)
 Drywall Patching (from $50) · Power Washing (from $100)
-Plumbing & Electrical — Free Estimate
+Plumbing — Free Estimate
 And much more — free estimates on every job!
 
 📱 ${C.PHONE}
